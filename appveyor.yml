@@ -1,0 +1,24 @@
+-
+  init:
+    - git config --global core.autocrlf true
+
+  build_script:
+    - cmd: powershell -NoProfile -ExecutionPolicy unrestricted -Command .\build.ps1 -Target "Package"
+
+  test: off
+
+  branches:
+    only:
+      - develop
+-
+  init:
+    - git config --global core.autocrlf true
+
+  build_script:
+    - cmd: powershell -NoProfile -ExecutionPolicy unrestricted -Command .\build.ps1 -Target "Publish"
+
+  test: off
+
+  branches:
+    only:
+      - master

@@ -1,0 +1,9 @@
+{
+  "projects": [ "Source", "Tests" ],
+  "packages": "Libraries/NuGetPackages",
+  "sdk": {
+    "version": "1.0.0-beta6",
+    "runtime": "clr",
+    "architecture": "x86"
+  }
+}

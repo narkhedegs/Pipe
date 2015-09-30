@@ -1,0 +1,34 @@
+{
+    "version": "0.0.0",
+    "title": "Pipe.Tests",
+    "description": "Pipe Unit Tests",
+    "authors": [
+        "narkhedegs@gmail.com"
+    ],
+    "owners": [
+        "narkhedegs@gmail.com"
+    ],
+    "copyright": "Copyright (C) narkhedegs@gmail.com",
+    "tags": [
+        "process",
+        "executable",
+        "standard output",
+        "standard error",
+        "standard input",
+        "pipe processes"
+    ],
+    "projectUrl": "https://github.com/narkhedegs/Pipe",
+    "licenseUrl": "",
+    "iconUrl": "",
+
+    "frameworks": {
+        "net45": { },
+        "net451": { },
+        "net452": { },
+        "net46": { }
+    },
+    "dependencies": {
+        "Pipe": "0.0.0",
+        "NUnit": "2.6.4"
+    }
+}

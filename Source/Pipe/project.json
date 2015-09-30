@@ -1,0 +1,30 @@
+﻿{
+  "version": "0.0.0",
+  "title": "Pipe",
+  "description": "Pipe",
+  "authors": [
+    "narkhedegs@gmail.com"
+  ],
+  "owners": [
+    "narkhedegs@gmail.com"
+  ],
+  "copyright": "Copyright (C) narkhedegs@gmail.com",
+  "tags": [
+    "process",
+    "executable",
+    "standard output",
+    "standard error",
+    "standard input",
+    "pipe processes"
+  ],
+  "projectUrl": "https://github.com/narkhedegs/Pipe",
+  "licenseUrl": "https://raw.githubusercontent.com/narkhedegs/Pipe/master/LICENSE",
+  "iconUrl": "https://raw.githubusercontent.com/narkhedegs/Pipe/master/icon.png",
+
+  "frameworks": {
+    "net45": { },
+    "net451": { },
+    "net452": { },
+    "net46": { }
+  }
+}
