@@ -43,7 +43,7 @@ namespace Narkhedegs.Tests
             var pipe = new Pipe();
             pipe.SetFixedLength();
 
-            var bytes = Enumerable.Range(0, 5*Constants.ByteBufferSize)
+            var bytes = Enumerable.Range(0, 5*Pipe.ByteBufferSize)
                 .Select(b => (byte) (b%256))
                 .ToArray();
             var asyncWrite = pipe.InputStream.WriteAsync(bytes, 0, bytes.Length)
@@ -74,7 +74,7 @@ namespace Narkhedegs.Tests
         {
             var pipe = new Pipe {InputStream = {WriteTimeout = 0}};
             pipe.SetFixedLength();
-            pipe.WriteText(new string('a', 2*Constants.ByteBufferSize));
+            pipe.WriteText(new string('a', 2*Pipe.ByteBufferSize));
             var asyncWrite = pipe.InputStream.WriteAsync(new byte[1], 0, 1);
             Assert.AreEqual(true, asyncWrite.ContinueWith(_ => { }).Wait(TimeSpan.FromSeconds(.01)));
             Assert.AreEqual(true, asyncWrite.IsFaulted);
@@ -86,7 +86,7 @@ namespace Narkhedegs.Tests
         {
             var pipe = new Pipe {InputStream = {WriteTimeout = 0}, OutputStream = {ReadTimeout = 1000}};
             pipe.SetFixedLength();
-            var text = Enumerable.Repeat((byte) 't', 3*Constants.ByteBufferSize).ToArray();
+            var text = Enumerable.Repeat((byte) 't', 3*Pipe.ByteBufferSize).ToArray();
             var asyncWrite = pipe.InputStream.WriteAsync(text, 0, text.Length);
             Assert.AreEqual(false, asyncWrite.Wait(TimeSpan.FromSeconds(.01)));
 
@@ -119,11 +119,11 @@ namespace Narkhedegs.Tests
             var pipe = new Pipe();
             var cancellationTokenSource = new CancellationTokenSource();
 
-            pipe.WriteText(new string('a', 2*Constants.ByteBufferSize));
+            pipe.WriteText(new string('a', 2*Pipe.ByteBufferSize));
 
             pipe.SetFixedLength();
 
-            var bytes = Enumerable.Repeat((byte) 'b', Constants.ByteBufferSize).ToArray();
+            var bytes = Enumerable.Repeat((byte) 'b', Pipe.ByteBufferSize).ToArray();
             var asyncWrite = pipe.InputStream.WriteAsync(bytes, 0, bytes.Length, cancellationTokenSource.Token);
             Assert.AreEqual(false, asyncWrite.Wait(TimeSpan.FromSeconds(.01)));
             cancellationTokenSource.Cancel();
@@ -137,7 +137,7 @@ namespace Narkhedegs.Tests
             var pipe = new Pipe();
             var cancellationTokenSource = new CancellationTokenSource();
 
-            pipe.WriteText(new string('a', 2*Constants.ByteBufferSize));
+            pipe.WriteText(new string('a', 2*Pipe.ByteBufferSize));
 
             var asyncRead = pipe.ReadTextAsync(1);
             Assert.AreEqual(true, asyncRead.Wait(TimeSpan.FromSeconds(5)));
@@ -145,16 +145,16 @@ namespace Narkhedegs.Tests
 
             pipe.SetFixedLength();
 
-            var bytes = Enumerable.Repeat((byte) 'b', Constants.ByteBufferSize).ToArray();
+            var bytes = Enumerable.Repeat((byte) 'b', Pipe.ByteBufferSize).ToArray();
             var asyncWrite = pipe.InputStream.WriteAsync(bytes, 0, bytes.Length, cancellationTokenSource.Token);
             Assert.AreEqual(false, asyncWrite.Wait(TimeSpan.FromSeconds(.01)));
             cancellationTokenSource.Cancel();
             Assert.AreEqual(false, asyncWrite.Wait(TimeSpan.FromSeconds(.01)));
 
-            asyncRead = pipe.ReadTextAsync((3*Constants.ByteBufferSize) - 1);
+            asyncRead = pipe.ReadTextAsync((3*Pipe.ByteBufferSize) - 1);
             Assert.AreEqual(true, asyncRead.Wait(TimeSpan.FromSeconds(5)));
             Assert.AreEqual(
-                new string('a', (2*Constants.ByteBufferSize) - 1) + new string('b', Constants.ByteBufferSize),
+                new string('a', (2*Pipe.ByteBufferSize) - 1) + new string('b', Pipe.ByteBufferSize),
                 asyncRead.Result);
         }
 
@@ -218,7 +218,7 @@ namespace Narkhedegs.Tests
             var pipe = new Pipe();
             pipe.SetFixedLength();
 
-            var longText = new string('x', (2*Constants.ByteBufferSize) + 1);
+            var longText = new string('x', (2*Pipe.ByteBufferSize) + 1);
             var asyncWrite = pipe.WriteTextAsync(longText);
             Assert.AreEqual(false, asyncWrite.Wait(TimeSpan.FromSeconds(.01)));
             Assert.Throws<InvalidOperationException>(() => pipe.InputStream.WriteByte(101));
@@ -240,7 +240,7 @@ namespace Narkhedegs.Tests
             Assert.AreEqual((byte) 100, buffer[0]);
 
             // long write
-            var longText = new string('y', 3*Constants.CharBufferSize);
+            var longText = new string('y', 3*Pipe.CharBufferSize);
             var asyncWrite = pipes[0].WriteTextAsync(longText);
             Assert.AreEqual(true, asyncWrite.Wait(TimeSpan.FromSeconds(5)));
             var asyncRead = pipes.Last().ReadTextAsync(longText.Length);
@@ -254,7 +254,7 @@ namespace Narkhedegs.Tests
             var pipes = CreatePipeChain(2);
             // note that this needs to be >> larger than the capacity to block all the pipes,
             // since we can store bytes in each pipe in the chain + each buffer between pipes
-            var longText = new string('z', 8*Constants.ByteBufferSize + 1);
+            var longText = new string('z', 8*Pipe.ByteBufferSize + 1);
             pipes.ForEach(p => p.SetFixedLength());
             var asyncWrite = pipes[0].WriteTextAsync(longText);
             Assert.AreEqual(false, asyncWrite.Wait(TimeSpan.FromSeconds(.01)));

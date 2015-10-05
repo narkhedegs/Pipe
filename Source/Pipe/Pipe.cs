@@ -7,51 +7,61 @@ using System.Threading.Tasks;
 
 namespace Narkhedegs
 {
-    internal sealed class Pipe
+    public sealed class Pipe
     {
-        // From MemoryStream (see http://referencesource.microsoft.com/#mscorlib/system/io/memorystream.cs,1416df83d2368912)
-        private const int MinSize = 256;
+        public const int ByteBufferSize = 1024;
+
+        public const int CharBufferSize = ByteBufferSize / sizeof(char);
+
+        private const int MinimumSize = 256;
+
         /// <summary>
-        /// The maximum size at which the pipe will be left empty. Using 2 * <see cref="Constants.ByteBufferSize"/>
-        /// helps prevent thrashing if data is being pushed through the pipe at that rate
+        /// The maximum size at which the pipe will be left empty. Using 2 * <see cref="ByteBufferSize"/>
+        /// helps prevent thrashing if data is being pushed through the pipe at that rate.
         /// </summary>
-        private const int MaxStableSize = 2 * Constants.ByteBufferSize;
+        private const int MaximumStableSize = 2 * ByteBufferSize;
+
+        /// <summary>
+        /// Task that has already completed successfully.
+        /// </summary>
+        private static readonly Task<int> CompletedTask = Task.FromResult(0);
+
+        /// <summary>
+        /// Empty byte array.
+        /// </summary>
         private static readonly byte[] Empty = new byte[0];
-        private static Task<int> CompletedZeroTask = Task.FromResult(0);
 
-        private readonly SemaphoreSlim bytesAvailableSignal = new SemaphoreSlim(initialCount: 0, maxCount: 1);
-        private readonly object @lock = new object();
-        private readonly PipeInputStream input;
-        private readonly PipeOutputStream output;
+        private readonly SemaphoreSlim _bytesAvailableSignal = new SemaphoreSlim(0, 1);
+        private readonly object _lock = new object();
+        private readonly PipeInputStream _input;
+        private readonly PipeOutputStream _output;
 
-        private byte[] buffer = Empty;
-        private int start, count;
-        private bool writerClosed, readerClosed;
-        private SemaphoreSlim spaceAvailableSignal;
-        private Task<int> readTask = CompletedZeroTask;
-        private Task writeTask = CompletedZeroTask;
+        private byte[] _buffer = Empty;
+        private int _start, _count;
+        private bool _writerClosed, _readerClosed;
+        private SemaphoreSlim _spaceAvailableSignal;
+        private Task<int> _readTask = CompletedTask;
+        private Task _writeTask = CompletedTask;
 
         public Pipe()
         {
-            this.input = new PipeInputStream(this);
-            this.output = new PipeOutputStream(this);
+            _input = new PipeInputStream(this);
+            _output = new PipeOutputStream(this);
         }
 
-        public Stream InputStream { get { return this.input; } }
-        public Stream OutputStream { get { return this.output; } }
+        public Stream InputStream => _input;
+        public Stream OutputStream => _output;
 
         #region ---- Signals ----
         public void SetFixedLength()
         {
-            lock (this.@lock)
+            lock (_lock)
             {
-                if (this.spaceAvailableSignal == null
-                    && !this.readerClosed
-                    && !this.writerClosed)
+                if (_spaceAvailableSignal == null
+                    && !_readerClosed
+                    && !_writerClosed)
                 {
-                    this.spaceAvailableSignal = new SemaphoreSlim(
-                        initialCount: this.GetSpaceAvailableNoLock() > 0 ? 1 : 0,
-                        maxCount: 1
+                    _spaceAvailableSignal = new SemaphoreSlim(GetSpaceAvailableNoLock() > 0 ? 1 : 0, 1
                     );
                 }
             }
@@ -59,67 +69,49 @@ namespace Narkhedegs
 
         private int GetSpaceAvailableNoLock()
         {
-            return Math.Max(this.buffer.Length, MaxStableSize) - this.count;
+            return Math.Max(_buffer.Length, MaximumStableSize) - _count;
         }
 
-        /// <summary>
-        /// MA: I used to have the signals updated in various ways and in various places
-        /// throughout the code. Now I have just one function that sets both signals to the correct
-        /// values. This is called from <see cref="ReadNoLock"/>, <see cref="WriteNoLock"/>, 
-        /// <see cref="InternalCloseReadSideNoLock"/>, and <see cref="InternalCloseWriteSideNoLock"/>.
-        /// 
-        /// While it may seem like this does extra work, nearly all cases are necessary. For example, we used
-        /// to say "signal bytes available if count > 0" at the end of <see cref="WriteNoLock"/>. The problem is
-        /// that we could have the following sequence of operations:
-        /// 1. <see cref="ReadNoLockAsync"/> blocks on <see cref="bytesAvailableSignal"/>
-        /// 2. <see cref="WriteNoLock"/> writes and signals
-        /// 3. <see cref="ReadNoLockAsync"/> wakes up
-        /// 4. Another <see cref="WriteNoLock"/> call writes and re-signals
-        /// 5. <see cref="ReadNoLockAsync"/> reads ALL content and returns, leaving <see cref="bytesAvailableSignal"/> signaled (invalid)
-        /// 
-        /// This new implementation avoids this because the <see cref="ReadNoLock"/> call inside <see cref="ReadNoLockAsync"/> will
-        /// properly unsignal after it consumes ALL the contents
-        /// </summary>
         private void UpdateSignalsNoLock()
         {
             // update bytes available
-            switch (this.bytesAvailableSignal.CurrentCount)
+            switch (_bytesAvailableSignal.CurrentCount)
             {
                 case 0:
-                    if (this.count > 0 || this.writerClosed)
+                    if (_count > 0 || _writerClosed)
                     {
-                        this.bytesAvailableSignal.Release();
+                        _bytesAvailableSignal.Release();
                     }
                     break;
                 case 1:
-                    if (this.count == 0 && !this.writerClosed)
+                    if (_count == 0 && !_writerClosed)
                     {
-                        this.bytesAvailableSignal.Wait();
+                        _bytesAvailableSignal.Wait();
                     }
                     break;
                 default:
-                    throw new InvalidOperationException("Should never get here");
+                    throw new InvalidOperationException("Should never get here.");
             }
 
             // update space available
-            if (this.spaceAvailableSignal != null)
+            if (_spaceAvailableSignal != null)
             {
-                switch (this.spaceAvailableSignal.CurrentCount)
+                switch (_spaceAvailableSignal.CurrentCount)
                 {
                     case 0:
-                        if (this.readerClosed || this.GetSpaceAvailableNoLock() > 0)
+                        if (_readerClosed || GetSpaceAvailableNoLock() > 0)
                         {
-                            this.spaceAvailableSignal.Release();
+                            _spaceAvailableSignal.Release();
                         }
                         break;
                     case 1:
-                        if (!this.readerClosed && this.GetSpaceAvailableNoLock() == 0)
+                        if (!_readerClosed && GetSpaceAvailableNoLock() == 0)
                         {
-                            this.spaceAvailableSignal.Wait();
+                            _spaceAvailableSignal.Wait();
                         }
                         break;
                     default:
-                        throw new InvalidOperationException("Should never get here");
+                        throw new InvalidOperationException("Should never get here.");
                 }
             }
         }
@@ -128,7 +120,7 @@ namespace Narkhedegs
         #region ---- Writing ----
         private Task WriteAsync(byte[] buffer, int offset, int count, TimeSpan timeout, CancellationToken cancellationToken)
         {
-            Throw.IfInvalidBuffer(buffer, offset, count);
+            ValidateBuffer(buffer, offset, count);
 
             // always respect cancellation, even in the sync flow
             if (cancellationToken.IsCancellationRequested)
@@ -139,31 +131,38 @@ namespace Narkhedegs
             if (count == 0)
             {
                 // if we didn't want to write anything, return immediately
-                return CompletedZeroTask;
+                return CompletedTask;
             }
 
-            lock (this.@lock)
+            lock (_lock)
             {
-                Throw<ObjectDisposedException>.If(this.writerClosed, "The write side of the pipe is closed");
-                Throw<InvalidOperationException>.If(!this.writeTask.IsCompleted, "Concurrent writes are not allowed");
-
-                if (this.readerClosed)
+                if (_writerClosed)
                 {
-                    // if we can't read, just throw away the bytes since no one can observe them anyway
-                    return CompletedZeroTask;
+                    throw new ObjectDisposedException("Writer", "The write side of the pipe is closed.");
                 }
 
-                if (this.spaceAvailableSignal == null
-                    || this.GetSpaceAvailableNoLock() >= count)
+                if (!_writeTask.IsCompleted)
+                {
+                    throw new InvalidOperationException("Concurrent writes are not allowed.");
+                }
+
+                if (_readerClosed)
+                {
+                    // if we can't read, just throw away the bytes since no one can observe them anyway
+                    return CompletedTask;
+                }
+
+                if (_spaceAvailableSignal == null
+                    || GetSpaceAvailableNoLock() >= count)
                 {
                     // if we're not limited by space, just write and return
-                    this.WriteNoLock(buffer, offset, count);
+                    WriteNoLock(buffer, offset, count);
 
-                    return CompletedZeroTask;
+                    return CompletedTask;
                 }
 
                 // otherwise, create and return an async write task
-                return this.writeTask = this.WriteNoLockAsync(buffer, offset, count, timeout, cancellationToken);
+                return _writeTask = WriteNoLockAsync(buffer, offset, count, timeout, cancellationToken);
             }
         }
 
@@ -187,24 +186,24 @@ namespace Narkhedegs
                 }
 
                 // acquire the semaphore
-                var acquired = await this.spaceAvailableSignal.WaitAsync(timeoutToUse, cancellationTokenToUse).ConfigureAwait(false);
+                var acquired = await _spaceAvailableSignal.WaitAsync(timeoutToUse, cancellationTokenToUse).ConfigureAwait(false);
                 if (!acquired)
                 {
-                    throw new TimeoutException("Timed out writing to the pipe");
+                    throw new TimeoutException("Timed out writing to the pipe.");
                 }
 
                 // we need to reacquire the lock after the await since we might have switched threads
-                lock (this.@lock)
+                lock (_lock)
                 {
-                    if (this.readerClosed)
+                    if (_readerClosed)
                     {
                         // if the read side is gone, we're instantly done
                         remainingCount = 0;
                     }
                     else
                     {
-                        var countToWrite = Math.Min(this.GetSpaceAvailableNoLock(), remainingCount);
-                        this.WriteNoLock(buffer, offset + (count - remainingCount), countToWrite);
+                        var countToWrite = Math.Min(GetSpaceAvailableNoLock(), remainingCount);
+                        WriteNoLock(buffer, offset + (count - remainingCount), countToWrite);
 
                         remainingCount -= countToWrite;
                     }
@@ -216,43 +215,43 @@ namespace Narkhedegs
         {
             if (count <= 0)
             {
-                throw new InvalidOperationException("Sanity check: WriteNoLock requires positive count");
+                throw new InvalidOperationException("Sanity check: WriteNoLock requires positive count.");
             }
 
-            this.EnsureCapacityNoLock(unchecked(this.count + count));
+            EnsureCapacityNoLock(unchecked(_count + count));
 
-            var writeStart = (this.start + this.count) % this.buffer.Length;
-            var writeStartToEndCount = Math.Min(this.buffer.Length - writeStart, count);
-            Buffer.BlockCopy(src: buffer, srcOffset: offset, dst: this.buffer, dstOffset: writeStart, count: writeStartToEndCount);
-            Buffer.BlockCopy(src: buffer, srcOffset: offset + writeStartToEndCount, dst: this.buffer, dstOffset: 0, count: count - writeStartToEndCount);
-            this.count += count;
+            var writeStart = (_start + _count) % _buffer.Length;
+            var writeStartToEndCount = Math.Min(_buffer.Length - writeStart, count);
+            Buffer.BlockCopy(buffer, offset, _buffer, writeStart, writeStartToEndCount);
+            Buffer.BlockCopy(buffer, offset + writeStartToEndCount, _buffer, 0, count - writeStartToEndCount);
+            _count += count;
 
-            this.UpdateSignalsNoLock();
+            UpdateSignalsNoLock();
         }
 
         private void EnsureCapacityNoLock(int capacity)
         {
             if (capacity < 0)
             {
-                throw new IOException("Pipe stream is too long");
+                throw new IOException("Pipe stream is too long.");
             }
 
-            var currentCapacity = this.buffer.Length;
+            var currentCapacity = _buffer.Length;
             if (capacity <= currentCapacity)
             {
                 return;
             }
 
-            if (this.spaceAvailableSignal != null
-                && capacity > MaxStableSize)
+            if (_spaceAvailableSignal != null
+                && capacity > MaximumStableSize)
             {
-                throw new InvalidOperationException("Sanity check: pipe should not attempt to expand beyond stable size in fixed length mode");
+                throw new InvalidOperationException("Sanity check: pipe should not attempt to expand beyond stable size in fixed length mode.");
             }
 
             int newCapacity;
-            if (currentCapacity < MinSize)
+            if (currentCapacity < MinimumSize)
             {
-                newCapacity = Math.Max(capacity, MinSize);
+                newCapacity = Math.Max(capacity, MinimumSize);
             }
             else
             {
@@ -263,53 +262,53 @@ namespace Narkhedegs
             }
 
             var newBuffer = new byte[newCapacity];
-            var startToEndCount = Math.Min(this.buffer.Length - this.start, this.count);
-            Buffer.BlockCopy(src: this.buffer, srcOffset: this.start, dst: newBuffer, dstOffset: 0, count: startToEndCount);
-            Buffer.BlockCopy(src: this.buffer, srcOffset: 0, dst: newBuffer, dstOffset: startToEndCount, count: this.count - startToEndCount);
-            this.buffer = newBuffer;
-            this.start = 0;
+            var startToEndCount = Math.Min(_buffer.Length - _start, _count);
+            Buffer.BlockCopy(_buffer, _start, newBuffer, 0, startToEndCount);
+            Buffer.BlockCopy(_buffer, 0, newBuffer, startToEndCount, _count - startToEndCount);
+            _buffer = newBuffer;
+            _start = 0;
         }
 
         private void CloseWriteSide()
         {
-            lock (this.@lock)
+            lock (_lock)
             {
                 // no-op if we're already closed
-                if (this.writerClosed)
+                if (_writerClosed)
                 {
                     return;
                 }
 
                 // if we don't have an active write task, close now
-                if (this.writeTask.IsCompleted)
+                if (_writeTask.IsCompleted)
                 {
-                    this.InternalCloseWriteSideNoLock();
+                    InternalCloseWriteSideNoLock();
                     return;
                 }
 
                 // otherwise, close as a continuation on the write task
-                this.writeTask = this.writeTask.ContinueWith(
+                _writeTask = _writeTask.ContinueWith(
                     (t, state) =>
                     {
                         var @this = (Pipe)state;
-                        lock (@this.@lock)
+                        lock (@this._lock)
                         {
                             @this.InternalCloseWriteSideNoLock();
                         }
                     }
-                    , state: this
+                    , this
                 );
             }
         }
 
         private void InternalCloseWriteSideNoLock()
         {
-            this.writerClosed = true;
-            this.UpdateSignalsNoLock();
-            if (this.readerClosed)
+            _writerClosed = true;
+            UpdateSignalsNoLock();
+            if (_readerClosed)
             {
                 // if both sides are now closed, cleanup
-                this.CleanupNoLock();
+                CleanupNoLock();
             }
         }
         #endregion
@@ -317,7 +316,7 @@ namespace Narkhedegs
         #region ---- Reading ----
         private Task<int> ReadAsync(byte[] buffer, int offset, int count, TimeSpan timeout, CancellationToken cancellationToken)
         {
-            Throw.IfInvalidBuffer(buffer, offset, count);
+            ValidateBuffer(buffer, offset, count);
 
             // always respect cancellation, even in the sync flow
             if (cancellationToken.IsCancellationRequested)
@@ -328,114 +327,120 @@ namespace Narkhedegs
             // if we didn't want to read anything, return immediately
             if (count == 0)
             {
-                return CompletedZeroTask;
+                return CompletedTask;
             }
 
-            lock (this.@lock)
+            lock (_lock)
             {
-                Throw<ObjectDisposedException>.If(this.readerClosed, "The read side of the pipe is closed");
-                Throw<InvalidOperationException>.If(!this.readTask.IsCompleted, "Concurrent reads are not allowed");
+                if (_readerClosed)
+                {
+                    throw new ObjectDisposedException("Reader", "The read side of the pipe is closed.");
+                }
+
+                if (!_readTask.IsCompleted)
+                {
+                    throw new InvalidOperationException("Concurrent reads are not allowed.");
+                }
 
                 // if we have bytes, read them and return synchronously
-                if (this.count > 0)
+                if (_count > 0)
                 {
-                    return Task.FromResult(this.ReadNoLock(buffer, offset, count));
+                    return Task.FromResult(ReadNoLock(buffer, offset, count));
                 }
 
                 // if we don't have bytes and no more are coming, return 0
-                if (this.writerClosed)
+                if (_writerClosed)
                 {
-                    return CompletedZeroTask;
+                    return CompletedTask;
                 }
 
                 // otherwise, create and return an async read task
-                return this.readTask = this.ReadNoLockAsync(buffer, offset, count, timeout, cancellationToken);
+                return _readTask = ReadNoLockAsync(buffer, offset, count, timeout, cancellationToken);
             }
         }
 
         private async Task<int> ReadNoLockAsync(byte[] buffer, int offset, int count, TimeSpan timeout, CancellationToken cancellationToken)
         {
-            var acquired = await this.bytesAvailableSignal.WaitAsync(timeout, cancellationToken).ConfigureAwait(false);
+            var acquired = await _bytesAvailableSignal.WaitAsync(timeout, cancellationToken).ConfigureAwait(false);
             if (!acquired)
             {
-                throw new TimeoutException("Timed out reading from the pipe");
+                throw new TimeoutException("Timed out reading from the pipe.");
             }
 
             // we need to reacquire the lock after the await since we might have switched threads
-            lock (this.@lock)
+            lock (_lock)
             {
-                return this.ReadNoLock(buffer, offset, count);
+                return ReadNoLock(buffer, offset, count);
             }
         }
 
         private int ReadNoLock(byte[] buffer, int offset, int count)
         {
-            var countToRead = Math.Min(this.count, count);
+            var countToRead = Math.Min(_count, count);
 
             var bytesRead = 0;
             while (bytesRead < countToRead)
             {
-                var bytesToRead = Math.Min(countToRead - bytesRead, this.buffer.Length - this.start);
-                Buffer.BlockCopy(src: this.buffer, srcOffset: this.start, dst: buffer, dstOffset: offset + bytesRead, count: bytesToRead);
+                var bytesToRead = Math.Min(countToRead - bytesRead, _buffer.Length - _start);
+                Buffer.BlockCopy(_buffer, _start, buffer, offset + bytesRead, bytesToRead);
                 bytesRead += bytesToRead;
-                this.start = (this.start + bytesToRead) % this.buffer.Length;
+                _start = (_start + bytesToRead) % _buffer.Length;
             }
-            this.count -= countToRead;
+            _count -= countToRead;
 
             // ensure that an empty pipe never stays above the max stable size
-            if (this.count == 0
-                && this.buffer.Length > MaxStableSize)
+            if (_count == 0
+                && _buffer.Length > MaximumStableSize)
             {
-                this.start = 0;
-                this.buffer = new byte[MaxStableSize];
+                _start = 0;
+                _buffer = new byte[MaximumStableSize];
             }
 
-            this.UpdateSignalsNoLock();
+            UpdateSignalsNoLock();
 
             return countToRead;
         }
 
         private void CloseReadSide()
         {
-            lock (this.@lock)
+            lock (_lock)
             {
                 // no-op if we're already closed
-                if (this.readerClosed)
+                if (_readerClosed)
                 {
                     return;
                 }
 
                 // if we don't have an active read task, close now
-                if (this.readTask.IsCompleted)
+                if (_readTask.IsCompleted)
                 {
-                    this.InternalCloseReadSideNoLock();
+                    InternalCloseReadSideNoLock();
                     return;
                 }
 
                 // otherwise, close as a continuation on the read task
-                this.readTask = this.readTask.ContinueWith(
+                _readTask = _readTask.ContinueWith(
                     (t, state) =>
                     {
                         var @this = (Pipe)state;
-                        lock (@this.@lock)
+                        lock (@this._lock)
                         {
                             @this.InternalCloseReadSideNoLock();
                         }
                         return -1;
-                    },
-                    state: this
+                    }, this
                 );
             }
         }
 
         private void InternalCloseReadSideNoLock()
         {
-            this.readerClosed = true;
-            this.UpdateSignalsNoLock();
-            if (this.writerClosed)
+            _readerClosed = true;
+            UpdateSignalsNoLock();
+            if (_writerClosed)
             {
                 // if both sides are now closed, cleanup
-                this.CleanupNoLock();
+                CleanupNoLock();
             }
         }
         #endregion
@@ -443,13 +448,10 @@ namespace Narkhedegs
         #region ---- Dispose ----
         private void CleanupNoLock()
         {
-            this.buffer = null;
-            this.readTask = null;
-            this.bytesAvailableSignal.Dispose();
-            if (this.spaceAvailableSignal != null)
-            {
-                this.spaceAvailableSignal.Dispose();
-            }
+            _buffer = null;
+            _readTask = null;
+            _bytesAvailableSignal.Dispose();
+            _spaceAvailableSignal?.Dispose();
         }
         #endregion
 
@@ -465,9 +467,9 @@ namespace Narkhedegs
         #region ---- Input Stream ----
         private sealed class PipeInputStream : Stream
         {
-            private readonly Pipe pipe;
+            private readonly Pipe _pipe;
 
-            public PipeInputStream(Pipe pipe) { this.pipe = pipe; }
+            public PipeInputStream(Pipe pipe) { _pipe = pipe; }
 
             public override IAsyncResult BeginRead(byte[] buffer, int offset, int count, AsyncCallback callback, object state)
             {
@@ -477,7 +479,7 @@ namespace Narkhedegs
             public override IAsyncResult BeginWrite(byte[] buffer, int offset, int count, AsyncCallback callback, object state)
             {
                 // according to the docs, the callback is optional
-                var writeTask = this.WriteAsync(buffer, offset, count, CancellationToken.None);
+                var writeTask = WriteAsync(buffer, offset, count, CancellationToken.None);
                 var writeResult = new AsyncWriteResult(state, writeTask, this);
                 if (callback != null)
                 {
@@ -488,42 +490,36 @@ namespace Narkhedegs
 
             private sealed class AsyncWriteResult : IAsyncResult
             {
-                private readonly object state;
-                private readonly Task writeTask;
-                private readonly PipeInputStream stream;
+                private readonly object _state;
+                private readonly PipeInputStream _stream;
 
                 public AsyncWriteResult(object state, Task writeTask, PipeInputStream stream)
                 {
-                    this.state = state;
-                    this.writeTask = writeTask;
-                    this.stream = stream;
+                    _state = state;
+                    WriteTask = writeTask;
+                    _stream = stream;
                 }
 
-                public Task WriteTask { get { return this.writeTask; } }
+                public Task WriteTask { get; }
 
-                public Stream Stream { get { return this.stream; } }
+                public Stream Stream => _stream;
 
-                object IAsyncResult.AsyncState { get { return this.state; } }
+                object IAsyncResult.AsyncState => _state;
 
-                WaitHandle IAsyncResult.AsyncWaitHandle { get { return this.writeTask.As<IAsyncResult>().AsyncWaitHandle; } }
+                WaitHandle IAsyncResult.AsyncWaitHandle => (WriteTask as IAsyncResult).AsyncWaitHandle;
 
-                bool IAsyncResult.CompletedSynchronously { get { return this.writeTask.As<IAsyncResult>().CompletedSynchronously; } }
+                bool IAsyncResult.CompletedSynchronously => (WriteTask as IAsyncResult).CompletedSynchronously;
 
-                bool IAsyncResult.IsCompleted { get { return this.writeTask.IsCompleted; } }
+                bool IAsyncResult.IsCompleted => WriteTask.IsCompleted;
             }
 
-            public override bool CanRead { get { return false; } }
+            public override bool CanRead => false;
 
-            public override bool CanSeek { get { return false; } }
+            public override bool CanSeek => false;
 
-            public override bool CanTimeout { get { return false; } }
+            public override bool CanTimeout => false;
 
-            public override bool CanWrite { get { return true; } }
-
-            public override void Close()
-            {
-                base.Close(); // calls Dispose(true)
-            }
+            public override bool CanWrite => true;
 
             public override Task CopyToAsync(Stream destination, int bufferSize, CancellationToken cancellationToken)
             {
@@ -534,7 +530,7 @@ namespace Narkhedegs
             {
                 if (disposing)
                 {
-                    this.pipe.CloseWriteSide();
+                    _pipe.CloseWriteSide();
                 }
             }
 
@@ -545,10 +541,20 @@ namespace Narkhedegs
 
             public override void EndWrite(IAsyncResult asyncResult)
             {
-                Throw.IfNull(asyncResult, "asyncResult");
+                if (asyncResult == null)
+                {
+                    throw new ArgumentNullException(nameof(asyncResult));
+                }
+
                 var writeResult = asyncResult as AsyncWriteResult;
-                Throw.If(writeResult == null || writeResult.Stream != this, "asyncResult: must be created by this stream's BeginWrite method");
-                writeResult.WriteTask.Wait();
+
+                if (writeResult == null || writeResult.Stream != this)
+                {
+                    throw new ArgumentNullException(nameof(asyncResult),
+                        "asyncResult: must be created by this stream's BeginWrite method.");
+                }
+
+                writeResult?.WriteTask.Wait();
             }
 
             public override void Flush()
@@ -559,15 +565,15 @@ namespace Narkhedegs
             public override Task FlushAsync(CancellationToken cancellationToken)
             {
                 // no-op since we are just a buffer
-                return CompletedZeroTask;
+                return CompletedTask;
             }
 
-            public override long Length { get { throw Throw.NotSupported(); } }
+            public override long Length { get { throw new NotSupportedException(); } }
 
             public override long Position
             {
-                get { throw Throw.NotSupported(); }
-                set { throw Throw.NotSupported(); }
+                get { throw new NotSupportedException(); }
+                set { throw new NotSupportedException(); }
             }
 
             public override int Read(byte[] buffer, int offset, int count)
@@ -593,19 +599,19 @@ namespace Narkhedegs
 
             public override long Seek(long offset, SeekOrigin origin)
             {
-                throw Throw.NotSupported();
+                throw new NotSupportedException();
             }
 
             public override void SetLength(long value)
             {
-                throw Throw.NotSupported();
+                throw new NotSupportedException();
             }
 
             public override void Write(byte[] buffer, int offset, int count)
             {
                 try
                 {
-                    this.pipe.WriteAsync(buffer, offset, count, TimeSpan.FromMilliseconds(this.WriteTimeout), CancellationToken.None).Wait();
+                    _pipe.WriteAsync(buffer, offset, count, TimeSpan.FromMilliseconds(WriteTimeout), CancellationToken.None).Wait();
                 }
                 catch (AggregateException ex)
                 {
@@ -621,33 +627,30 @@ namespace Narkhedegs
 
             public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
             {
-                return this.pipe.WriteAsync(buffer, offset, count, TimeSpan.FromMilliseconds(this.WriteTimeout), cancellationToken);
+                return _pipe.WriteAsync(buffer, offset, count, TimeSpan.FromMilliseconds(WriteTimeout), cancellationToken);
             }
 
-            public override void WriteByte(byte value)
-            {
-                // the base implementation is inefficient, but I don't think we care
-                base.WriteByte(value);
-            }
-
-            private int writeTimeout = Timeout.Infinite;
+            private int _writeTimeout = Timeout.Infinite;
 
             public override int WriteTimeout
             {
-                get { return this.writeTimeout; }
+                get { return _writeTimeout; }
                 set
                 {
                     if (value != Timeout.Infinite)
                     {
-                        Throw.IfOutOfRange(value, "WriteTimeout", min: 0);
+                        if (value.CompareTo(0) < 0)
+                        {
+                            throw new ArgumentOutOfRangeException("WriteTimeout", $"Expected: >= 0, but was {value}");
+                        }
                     }
-                    this.writeTimeout = value;
+                    _writeTimeout = value;
                 }
             }
 
             private static NotSupportedException WriteOnly([CallerMemberName] string memberName = null)
             {
-                throw new NotSupportedException(memberName + ": the stream is write only");
+                throw new NotSupportedException(memberName + ": the stream is write only.");
             }
         }
         #endregion
@@ -655,14 +658,14 @@ namespace Narkhedegs
         #region ---- Output Stream ----
         private sealed class PipeOutputStream : Stream
         {
-            private readonly Pipe pipe;
+            private readonly Pipe _pipe;
 
-            public PipeOutputStream(Pipe pipe) { this.pipe = pipe; }
+            public PipeOutputStream(Pipe pipe) { _pipe = pipe; }
 
             public override IAsyncResult BeginRead(byte[] buffer, int offset, int count, AsyncCallback callback, object state)
             {
                 // according to the docs, the callback is optional
-                var readTask = this.ReadAsync(buffer, offset, count, CancellationToken.None);
+                var readTask = ReadAsync(buffer, offset, count, CancellationToken.None);
                 var readResult = new AsyncReadResult(state, readTask, this);
                 if (callback != null)
                 {
@@ -673,28 +676,27 @@ namespace Narkhedegs
 
             private sealed class AsyncReadResult : IAsyncResult
             {
-                private readonly object state;
-                private readonly Task<int> readTask;
-                private readonly PipeOutputStream stream;
+                private readonly object _state;
+                private readonly PipeOutputStream _stream;
 
                 public AsyncReadResult(object state, Task<int> readTask, PipeOutputStream stream)
                 {
-                    this.state = state;
-                    this.readTask = readTask;
-                    this.stream = stream;
+                    _state = state;
+                    ReadTask = readTask;
+                    _stream = stream;
                 }
 
-                public Task<int> ReadTask { get { return this.readTask; } }
+                public Task<int> ReadTask { get; }
 
-                public Stream Stream { get { return this.stream; } }
+                public Stream Stream => _stream;
 
-                object IAsyncResult.AsyncState { get { return this.state; } }
+                object IAsyncResult.AsyncState => _state;
 
-                WaitHandle IAsyncResult.AsyncWaitHandle { get { return this.readTask.As<IAsyncResult>().AsyncWaitHandle; } }
+                WaitHandle IAsyncResult.AsyncWaitHandle => (ReadTask as IAsyncResult).AsyncWaitHandle;
 
-                bool IAsyncResult.CompletedSynchronously { get { return this.readTask.As<IAsyncResult>().CompletedSynchronously; } }
+                bool IAsyncResult.CompletedSynchronously => (ReadTask as IAsyncResult).CompletedSynchronously;
 
-                bool IAsyncResult.IsCompleted { get { return this.readTask.IsCompleted; } }
+                bool IAsyncResult.IsCompleted => ReadTask.IsCompleted;
             }
 
             public override IAsyncResult BeginWrite(byte[] buffer, int offset, int count, AsyncCallback callback, object state)
@@ -702,38 +704,36 @@ namespace Narkhedegs
                 throw ReadOnly();
             }
 
-            public override bool CanRead { get { return true; } }
+            public override bool CanRead => true;
 
-            public override bool CanSeek { get { return false; } }
+            public override bool CanSeek => false;
 
-            public override bool CanTimeout { get { return true; } }
+            public override bool CanTimeout => true;
 
-            public override bool CanWrite { get { return false; } }
-
-            public override void Close()
-            {
-                base.Close(); // calls Dispose(true)
-            }
-
-            public override Task CopyToAsync(Stream destination, int bufferSize, CancellationToken cancellationToken)
-            {
-                // the base implementation is reasonable
-                return base.CopyToAsync(destination, bufferSize, cancellationToken);
-            }
+            public override bool CanWrite => false;
 
             protected override void Dispose(bool disposing)
             {
                 if (disposing)
                 {
-                    this.pipe.CloseReadSide();
+                    _pipe.CloseReadSide();
                 }
             }
 
             public override int EndRead(IAsyncResult asyncResult)
             {
-                Throw.IfNull(asyncResult, "asyncResult");
+                if (asyncResult == null)
+                {
+                    throw new ArgumentNullException(nameof(asyncResult));
+                }
+
                 var readResult = asyncResult as AsyncReadResult;
-                Throw.If(readResult == null || readResult.Stream != this, "asyncResult: must be created by this stream's BeginRead method");
+
+                if (readResult == null || readResult.Stream != this)
+                {
+                    throw new ArgumentNullException(nameof(asyncResult),
+                        "asyncResult: must be created by this stream's BeginRead method.");
+                }
 
                 return readResult.ReadTask.Result;
             }
@@ -753,19 +753,19 @@ namespace Narkhedegs
                 throw ReadOnly();
             }
 
-            public override long Length { get { throw Throw.NotSupported(); } }
+            public override long Length { get { throw new NotSupportedException(); } }
 
             public override long Position
             {
-                get { throw Throw.NotSupported(); }
-                set { throw Throw.NotSupported(); }
+                get { throw new NotSupportedException(); }
+                set { throw new NotSupportedException(); }
             }
 
             public override int Read(byte[] buffer, int offset, int count)
             {
                 try
                 {
-                    return this.pipe.ReadAsync(buffer, offset, count, TimeSpan.FromMilliseconds(this.ReadTimeout), CancellationToken.None).Result;
+                    return _pipe.ReadAsync(buffer, offset, count, TimeSpan.FromMilliseconds(ReadTimeout), CancellationToken.None).Result;
                 }
                 catch (AggregateException ex)
                 {
@@ -781,38 +781,35 @@ namespace Narkhedegs
 
             public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
             {
-                return this.pipe.ReadAsync(buffer, offset, count, TimeSpan.FromMilliseconds(this.ReadTimeout), cancellationToken);
+                return _pipe.ReadAsync(buffer, offset, count, TimeSpan.FromMilliseconds(ReadTimeout), cancellationToken);
             }
 
-            public override int ReadByte()
-            {
-                // this is inefficient, but I think that's ok
-                return base.ReadByte();
-            }
-
-            private int readTimeout = Timeout.Infinite;
+            private int _readTimeout = Timeout.Infinite;
 
             public override int ReadTimeout
             {
-                get { return this.readTimeout; }
+                get { return _readTimeout; }
                 set
                 {
                     if (value != Timeout.Infinite)
                     {
-                        Throw.IfOutOfRange(value, "ReadTimeout", min: 0);
+                        if (value.CompareTo(0) < 0)
+                        {
+                            throw new ArgumentOutOfRangeException("ReadTimeout", $"Expected: >= 0, but was {value}");
+                        }
                     }
-                    this.readTimeout = value;
+                    _readTimeout = value;
                 }
             }
 
             public override long Seek(long offset, SeekOrigin origin)
             {
-                throw Throw.NotSupported();
+                throw new NotSupportedException();
             }
 
             public override void SetLength(long value)
             {
-                throw Throw.NotSupported();
+                throw new NotSupportedException();
             }
 
             public override void Write(byte[] buffer, int offset, int count)
@@ -838,7 +835,30 @@ namespace Narkhedegs
 
             private static NotSupportedException ReadOnly([CallerMemberName] string memberName = null)
             {
-                throw new NotSupportedException(memberName + ": the stream is read only");
+                throw new NotSupportedException(memberName + ": the stream is read only.");
+            }
+        }
+        #endregion
+
+        #region ---- Helpers ----
+        private void ValidateBuffer<T>(T[] buffer, int offset, int count)
+        {
+            if (buffer == null)
+            {
+                throw new ArgumentNullException(nameof(buffer));
+            }
+            if (offset < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(offset));
+            }
+            if (count < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(count));
+            }
+            if (offset + count > buffer.Length)
+            {
+                throw new ArgumentOutOfRangeException(nameof(offset) + ", " + nameof(count),
+                    "The segment described by offset and count must be within buffer.");
             }
         }
         #endregion

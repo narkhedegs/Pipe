@@ -1,7 +1,7 @@
 ﻿{
   "version": "0.0.0",
   "title": "Pipe",
-  "description": "Pipe",
+  "description": "Pipe streams in .NET without deadlocks.",
   "authors": [
     "narkhedegs@gmail.com"
   ],
